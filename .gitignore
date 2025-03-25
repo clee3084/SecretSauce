@@ -9,6 +9,10 @@ data/
 !package.json
 !package-lock.json
 
+# Project specific
+product_hunter/
+src/upgini/utils/env.py
+
 # C extensions
 *.so
 
