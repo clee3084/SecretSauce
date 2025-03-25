@@ -8,6 +8,7 @@ import concurrent.futures
 from functools import lru_cache
 import logging
 from typing import List, Dict, Any
+import glob
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,7 +40,6 @@ QUERY = '''
         description
         votesCount
         url
-        website
         createdAt
         topics {
           edges {
@@ -76,17 +76,17 @@ B2B_KEYWORDS = {
 }
 
 @lru_cache(maxsize=1000)
-def is_consumer_product(product: Dict[str, Any]) -> bool:
+def is_consumer_product(product_id: str, topics: tuple, description: str, tagline: str) -> bool:
     """Determine if a product is consumer-focused based on its topics and description."""
-    # Get all topics for the product
-    topics = {topic['node']['name'] for topic in product['topics']['edges']}
+    # Convert topics set to tuple for hashing
+    topics_set = set(topics)
     
     # Check if any excluded categories are present
-    if topics & EXCLUDED_CATEGORIES:
+    if topics_set & EXCLUDED_CATEGORIES:
         return False
     
     # Check description and tagline for B2B keywords
-    text = (product['description'] + ' ' + product['tagline']).lower()
+    text = (description + ' ' + tagline).lower()
     if any(keyword in text for keyword in B2B_KEYWORDS):
         return False
     
@@ -126,7 +126,16 @@ def fetch_page(cursor: str = None) -> Dict[str, Any]:
 def process_products(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Process and filter products."""
     # Filter for consumer products
-    consumer_products = [product for product in products if is_consumer_product(product)]
+    consumer_products = []
+    for product in products:
+        # Extract data for caching
+        product_id = product['id']
+        topics = tuple(topic['node']['name'] for topic in product['topics']['edges'])
+        description = product.get('description', '')
+        tagline = product.get('tagline', '')
+        
+        if is_consumer_product(product_id, topics, description, tagline):
+            consumer_products.append(product)
     
     # Sort by votes
     consumer_products.sort(key=lambda x: x['votesCount'], reverse=True)
@@ -139,7 +148,7 @@ def process_products(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return consumer_products
 
 def save_data(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
-    """Save products and summary to files."""
+    """Save products and summary to files and clean up old files."""
     # Create data directory if it doesn't exist
     if not os.path.exists('data'):
         os.makedirs('data')
@@ -158,6 +167,24 @@ def save_data(products: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
     
     logger.info(f"Data saved to {filename}")
     logger.info(f"Summary updated in {summary_file}")
+    
+    # Clean up old files
+    try:
+        # Get list of all batch files except the current one
+        batch_files = glob.glob('data/products_batch_*.json')
+        current_file = os.path.abspath(filename)
+        
+        for file in batch_files:
+            if os.path.abspath(file) != current_file:
+                try:
+                    os.remove(file)
+                    logger.debug(f"Cleaned up old file: {file}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove old file {file}: {str(e)}")
+        
+        logger.info("Old files cleaned up successfully")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
 
 def fetch_products():
     """Fetch products from Product Hunt API and save them to JSON files."""
@@ -213,7 +240,6 @@ def fetch_products():
                     'tagline': product['tagline'],
                     'votes': product['votesCount'],
                     'url': product['url'],
-                    'website': product['website'],
                     'created_at': product['createdAt'],
                     'topics': [topic['node']['name'] for topic in product['topics']['edges']]
                 }
